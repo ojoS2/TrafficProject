@@ -1,0 +1,42 @@
+   This file is just a little guide for those who wish to modify the programs for some reason like update parameters, improve the code or make your own experiments. It doesn't matter. 
+ 
+   The OvertakingNaSch.f95 file is a FORTRAN95 program and you should have a Fortran compiler to run it. The Gnu Fortran compiler (gfortran) is just fine and you are free to choose your own (beware that the file was not compiled with other compiler and, therefore, it is not compiler's bug proofed). 
+
+  To compile the file type in the terminal 
+
+$ cd path_to_the_file_directory 
+$ gfortran -fcheck=all -o output OvertakingNaSch.f95
+
+  To run it type in the terminal 
+
+$ ./output
+
+  Notice that, by default, the main program actions are commented (invisible). To run the program such to produce the result files you have to enter the in program code and uncomment the routines in the Main body yourself (or set up your own experiment with the algorithm as a subroutine).  
+ 
+
+  Now, if you wish to make modifications to program or just wish to understand it we hope you will be happy to notice that the code was made in the simplest and clearer way we have conceived:
+
+  ALL the code is explicitly written. For example instead of the construct
+
+     IF(.NOT.Simplicity)Simplicity=.TRUE.
+
+  we have opted for the construct
+
+     IF(.NOT.Simplicity)THEN
+       Simplicity=.TRUE.
+     END IF
+  
+  ALL the externally inputted parameters, such as the size of the system, the number of configurations, the run time, etc. are all written in the first module (EXTERNAL_PARAMETERS module) and are all written with CAPITAL LETTERS and may be modified by the user;
+  
+  ALL the global variables are declared in the GLOBAL_VARIABLES module and are all written in CAPITAL LETTERS. If You wish to vary one of the external parâmeters (for example the probability of deceleration) you may declare it as a variable in this module and comment the respective line in the EXTERNAL_PARAMETERS module;
+
+  ALL functions and subroutines are called by names with the mixing of CAPITAL and lower letters, for example, the subroutine: SpatioTemporalPattern. And all the local dummy variables are written in lower case, for example, i, aux, gap variables.
+
+  ALL routines are commented on.
+
+  The program is very simple, both in language and intuition, but it is not optimized. Feel free to make your modifications and explorations. 
+
+  Beware though, the program are not bug free, and you should pay attention to what are you doing.  
+  
+  Doubts and Suggestions email me: lopes.jobrelatedemail@gmail.com 
+  
