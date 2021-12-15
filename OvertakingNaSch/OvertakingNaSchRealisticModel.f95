@@ -1,504 +1,776 @@
-! In this module we declare all constants used throughout the program as well as where we define abstract objects
-! If one wish to vary some of these constants (the deceleration probability, for example) you may comment the respective line in this module and declare it in the GLOBAL_VARIABLES module  
+! In this module we declare all constants used throughout the program and declare an object with Knospes' model properties
+! If one wish to vary some of these constants (the deceleration probability, for example) you may comment the respective line in this module and declare it in the GLOBAL_VARIABLES module
 MODULE EXTERNAL_PARAMETERS
   IMPLICIT NONE
-  TYPE :: PARTICLES 
+  TYPE :: PARTICLES
     INTEGER :: POSITION
     INTEGER :: VELOCITY
     INTEGER :: SPECIES
-    LOGICAL :: BRAKE_LIGHT
-    REAL    :: DECELERATION_PROBABILITY 
+    INTEGER :: BRAKE_LIGHT
   END TYPE PARTICLES
-  INTEGER, PARAMETER :: rdp=selected_real_kind(10,300) 
-  INTEGER, PARAMETER :: L = 50000                                                                                                                                                                                                                                                                                             
+  INTEGER, PARAMETER :: L = 500000
   INTEGER, PARAMETER :: MEASUREMENT_TIME = 100000
   INTEGER, PARAMETER :: TRANSIENT_TIME = 10000
-  INTEGER, PARAMETER :: VEHICLE_LENGTH = 3
-  INTEGER, PARAMETER :: MAXIMUM_VELOCITY = 20 
-  INTEGER, PARAMETER :: SECURITY_GAP = 7 
-  REAL, PARAMETER :: CUT_OFF_TIME = 4.0
-  REAL, PARAMETER :: P = 0.1
-  REAL, PARAMETER :: P_0 = .5
-  REAL, PARAMETER :: P_B = .94
+  INTEGER, PARAMETER :: VEHICLE_LENGTH = 5
+  INTEGER, PARAMETER :: MAXIMUM_VELOCITY = 20
+  INTEGER, PARAMETER :: SECURITY_GAP = 7
+  REAL, PARAMETER :: CUT_OFF_TIME = 6.0
+  REAL, PARAMETER :: P_f = 0.1
+  REAL, PARAMETER :: P_0 = 0.5
+  REAL, PARAMETER :: P_B = 0.94
 END MODULE EXTERNAL_PARAMETERS
-! Here we declare all the global variables 
+! Here we declare all the global variables   
 MODULE GLOBAL_VARIABLES
   USE EXTERNAL_PARAMETERS
   IMPLICIT NONE
   TYPE(PARTICLES), DIMENSION(:), ALLOCATABLE :: VEHICLES
-  LOGICAL, DIMENSION(0:L-1) :: STREET
-  INTEGER :: ISEED, N, NUMBER_OF_DEFECTORS
+  INTEGER, DIMENSION(:), ALLOCATABLE :: STREET
+  INTEGER :: ISEED, N
 END MODULE GLOBAL_VARIABLES
 ! Functions used in the main program and routines
-MODULE FUNCTIONS  
+MODULE FUNCTIONS
   USE EXTERNAL_PARAMETERS
   USE GLOBAL_VARIABLES
   IMPLICIT NONE
   CONTAINS
-! This function generates random numbers in the interval [0:1) and random integer seeds in the interval [1:134456)  
-  FUNCTION RandomGenerator(Seed)       
+! This function generates random numbers in the interval [0:1) and random integer seeds in the interval [1:134456)
+  FUNCTION RandomGenerator(Seed)
     INTEGER, INTENT(INOUT) :: Seed
     REAL :: RandomGenerator
-    ISEED = mod(8121*seed+28411, 134456) 
-    RandomGenerator = real(ISEED)/134456.        
+    ISEED = mod(8121*seed+28411, 134456)
+    RandomGenerator = real(ISEED)/134456.
     RETURN
   END FUNCTION RandomGenerator
 END MODULE FUNCTIONS
-  
-MODULE SECONDARY_ROUTINES
+
+MODULE ROUTINES
   USE EXTERNAL_PARAMETERS
   USE GLOBAL_VARIABLES
   USE FUNCTIONS
   IMPLICIT NONE
   CONTAINS
-  
-  ! This routine selects the position of a set (of size SizeOfSystem) of vehicles randomly without superposition 
+! This routine initializes the vehicles' vector with random position and maximum velocity. The velocity is corrected afterwards 
   SUBROUTINE  RandomPositionInitialization(SizeOfSystem)
     INTEGER, INTENT(IN) :: SizeOfSystem
     INTEGER :: i, acum, aux
-    LOGICAL, DIMENSION(0:INT(L/VEHICLE_LENGTH)) :: vetorauxiliar
-    STREET = .FALSE.
-    vetorauxiliar = .FALSE.
+    LOGICAL, DIMENSION(0:INT(L/VEHICLE_LENGTH)) :: AuxiliaryVector
+    STREET = 0
+    AuxiliaryVector = .FALSE.
     acum = 1
     DO WHILE(acum <= SizeOfSystem)
-      aux = INT((L/VEHICLE_LENGTH)*RandomGenerator(ISEED))      
-      IF(.NOT.vetorauxiliar(aux))THEN 
-        vetorauxiliar(aux) = .TRUE.   
+      aux = INT((L/VEHICLE_LENGTH)*RandomGenerator(ISEED))
+      IF(.NOT.AuxiliaryVector(aux))THEN
+        AuxiliaryVector(aux) = .TRUE.
         VEHICLES(acum)%POSITION = VEHICLE_LENGTH*aux
-        VEHICLES(acum)%VELOCITY = MAXIMUM_VELOCITY     
-        acum = acum + 1                       
+        VEHICLES(acum)%VELOCITY = MAXIMUM_VELOCITY
+        acum = acum + 1
       END IF
-    END DO 
+    END DO
     DO i = 0, INT(L/VEHICLE_LENGTH)
-      IF(vetorauxiliar(i))THEN
+      IF(AuxiliaryVector(i))THEN
         DO aux = 0, VEHICLE_LENGTH
-          STREET(VEHICLE_LENGTH*i+aux) = .TRUE.
+          STREET(mod(VEHICLE_LENGTH*i+aux,L)) = i
         END DO
-      END IF 
+      END IF
     END DO
   END SUBROUTINE RandomPositionInitialization
-  !This subroutine organize the particles in positional order using the bubble algorithm
-  !It requares the initial position and the final position of the piece of the VEHICLES object which one wish to order. 
+! This routine reorder the vehicles using the bubble algorithm. This is important when overtaking is allowed. It takes the extremities of the vehicles' vector as inputs. 
   SUBROUTINE ParticlesReordering(Beginnig, Ending)
     INTEGER, INTENT(IN) :: Beginnig, Ending
     LOGICAL :: flag
-    INTEGER :: i, aux
-    TYPE(PARTICLES) :: auxiliaryvector      
-    DO               
-      flag=.TRUE.               
+    INTEGER :: i
+    TYPE(PARTICLES) :: AuxiliaryVector
+    DO
+      flag=.TRUE.
       DO i=Beginnig , Ending-1
         IF(VEHICLES(i)%POSITION>VEHICLES(i+1)%POSITION)THEN
-          auxiliaryvector=VEHICLES(i)      
+          AuxiliaryVector=VEHICLES(i)
           VEHICLES(i)=VEHICLES(i+1)
-          VEHICLES(i+1)=auxiliaryvector
+          VEHICLES(i+1)=AuxiliaryVector
           flag=.FALSE.
-        END IF 
-      END DO 
-      IF(flag) EXIT 
+        END IF
+      END DO
+      IF(flag) EXIT
     END DO
   END SUBROUTINE ParticlesReordering
-  !This routine selects vehicles randomly and initialize then as belonging to a given species
-  !It requires the number of particles and the the number of defectors
-   SUBROUTINE RandomSpeciesInitialization(NumberOfParticles, NumberOfdefectors)
-    INTEGER, INTENT(IN) :: NumberOfParticles, NumberOfdefectors
-    INTEGER :: aux, acum, cooperators, defectors
-    defectors = NumberOfdefectors 
-    cooperators = NumberOfParticles - NumberOfdefectors
-    IF(cooperators <= defectors)THEN  
-      VEHICLES%SPECIES = 1
-      acum = 1                            
-      DO WHILE(acum <= cooperators)
-        aux = INT(NumberOfParticles*RandomGenerator(ISEED))
-        IF (aux > 0)THEN
-          IF(VEHICLES(aux)%SPECIES == 1)THEN 
-            VEHICLES(aux)%SPECIES = 0
-            acum = acum + 1                       
-          END IF 
-        END IF 
-      END DO 
-    ELSE IF(cooperators > defectors)THEN  
-      VEHICLES%SPECIES = 0
-      acum = 1                            
-      DO WHILE(acum <= defectors)
-        aux = INT(NumberOfParticles*RandomGenerator(ISEED))
-        IF (aux > 0)THEN
-          IF (VEHICLES(aux)%SPECIES == 0)THEN 
-            VEHICLES(aux)%SPECIES = 1
-            acum = acum + 1                      
-          END IF 
-        END IF 
-      END DO 
-    END IF 
-  END SUBROUTINE RandomSpeciesInitialization
-  !This routine chooses the first vehicle to initialize the velocity update
-  SUBROUTINE ChooseTheFirst(Ending)
-    INTEGER, INTENT(OUT) :: Ending
-    INTEGER :: i, gap, aux, aux1, aux2, aux3, aux4 ! the number of aux parameter must be equal to the VEHICLE_LENGTH parameter ... use a vector form INTEGER, DIMENSION(0:VEHICLE_LENGTH) :: aux, if you will 
-    LOGICAL :: flag
-    flag = .FALSE.
-    Ending = N
-    !This piece of code decides the first vehicle if there is a piece of the system in free state
-    !If there are a vehicle which velocity is inferior to the space in front of it and the vehicle behind can not overtake, then it must behave as a cooperator and is chosen as the first one  
-    DO i = N, 1, -1 
+!As the algorithm presents a direction to update and non-physical featurs may appear if the updating of the overtaking algorithm always starts from the same particle, then this routine chooses regions where the initialization will cause the lowest disturbances possible. It gives two output corresponding to the limits of the vehicles' vector   
+  SUBROUTINE ChooseTheFirst(Beginning, Ending)
+    INTEGER, INTENT(OUT) :: Ending, Beginning
+    INTEGER :: i, gap, aux, aux1, aux2, aux3, aux4, aux5 ! the number of aux parameter must be equal to the VEHICLE_LENGTH parameter plus one... use a vector form INTEGER, DIMENSION(0:VEHICLE_LENGTH+1) :: aux, if you will
+    !This piece of code decides if there is a piece of the system in free state where will come the first vehicle
+    !If there are a vehicle which velocity is inferior to the space in front of it and the vehicle behind can not overtake, then it must behave as a cooperator and is chosen as the first one
+    DO i = N, 1, -1
       gap = VEHICLES(i + 1)%POSITION - VEHICLES(i)%POSITION - VEHICLE_LENGTH
       aux = VEHICLES(i)%POSITION - VEHICLES(i - 1)%POSITION + VEHICLES(i)%VELOCITY
       IF(VEHICLES(i)%VELOCITY < gap .AND. VEHICLES(i - 1)%VELOCITY <= aux )THEN
         Ending = i
-        flag = .TRUE.
-        EXIT
-      END IF 
-    END DO     
+        Beginning = i-N+1
+        Return
+      END IF
+      if(VEHICLES(i)%SPECIES == 0)then
+        Ending = i
+        Beginning = i-N+1
+        Return
+      End if
+    END DO
     !If the piece of code above fails, thats it, if the all the system is in congested state the first vehicle is chosen using the piece of code below
-    !If there are a vehicle too slow to overtake the vehicles in front and the vehicles as well as the vehicles behind it, then it must behave as a cooperator and is chosen as the first one  
-    IF(.NOT.flag)THEN
-      DO i = N, 1, -1
-        aux1 = VEHICLES(i)%POSITION + VEHICLES(i)%VELOCITY + VEHICLE_LENGTH 
-        aux2 = VEHICLES(i - 1)%POSITION + VEHICLES(i - 1)%VELOCITY + VEHICLE_LENGTH
-        aux3 = VEHICLES(i - 2)%POSITION + VEHICLES(i - 2)%VELOCITY + VEHICLE_LENGTH
-        aux4 = VEHICLES(i - 3)%POSITION + VEHICLES(i - 3)%VELOCITY + VEHICLE_LENGTH
-        IF(aux1 <= VEHICLES(i + 1)%POSITION)THEN
-          IF(aux2 <= VEHICLES(i + 1)%POSITION)THEN
-            IF(aux3 <= VEHICLES(i + 1)%POSITION)THEN
-              IF(aux4 <= VEHICLES(i + 1)%POSITION)THEN
-                Ending = i
-                flag = .TRUE.
-                EXIT
-              END IF 
-            END IF  
-          END IF 
-        END IF 
-      END DO 
-    END IF
+    !This code is based on the fact that overtaking is not very commom even if all can overtake to inicialize the update from a particle that will neither overtake or be overtaken anyway. If there are a vehicle too slow to overtake the vehicles in front as well as the vehicles behind it, then it must behave as a cooperator and is chosen as the first one.
+    DO i = N, 1, -1
+      aux1 = VEHICLES(i)%POSITION + VEHICLES(i)%VELOCITY + VEHICLE_LENGTH
+      aux2 = VEHICLES(i - 1)%POSITION + VEHICLES(i - 1)%VELOCITY + VEHICLE_LENGTH
+      aux3 = VEHICLES(i - 2)%POSITION + VEHICLES(i - 2)%VELOCITY + VEHICLE_LENGTH
+      aux4 = VEHICLES(i - 3)%POSITION + VEHICLES(i - 3)%VELOCITY + VEHICLE_LENGTH
+      aux5 = VEHICLES(i + 1)%POSITION + VEHICLES(i + 1)%VELOCITY + VEHICLE_LENGTH
+      IF(aux1 <= aux5)THEN
+        IF(aux2 <= aux5)THEN
+          IF(aux3 <= aux5)THEN
+            IF(aux4 <= aux5)THEN
+              Ending = i
+              Beginning = i-N+1
+              RETURN
+            END IF
+          END IF
+        END IF
+      END IF
+    END DO
+    Ending = N
+    Beginning = 1
   END SUBROUTINE ChooseTheFirst
-  !This routine performs the second and tird steps of the  algorithm of the cooperators
-  SUBROUTINE CooperatorsAlgorithm(i, gap, gapII, initialvelocity)
-    INTEGER, INTENT(IN) :: i, gap, gapII, initialvelocity
-    INTEGER :: aux, efectivegap
-    ! aux=MIN(v_(n+1),gap(n+1))
-    IF(VEHICLES(i + 1)%VELOCITY < gapII)THEN
-      aux = VEHICLES(i + 1)%VELOCITY
-    ELSE 
-      aux = gapII
-    END IF  
-    ! aux=MAX(aux-SECURITY_GAP, 0)
-    aux = aux - SECURITY_GAP
-    IF(aux < 0)THEN
-      aux = 0
-    END IF  
-    ! EfectiveGap= gap + aux = gap + MAX(MIN(v_(n+1),gap(n+1))-SECURITY_GAP, 0)
-    efectivegap = gap + aux
-    ! v_(n)(t+1)=MIN(EfectiveGap,v_(n)(t))
-    IF(VEHICLES(i)%VELOCITY > efectivegap)THEN
-      VEHICLES(i)%VELOCITY = efectivegap
-    END IF   
-    ! If the vehicle decelerates because of other vehicles its brake lights turn on
-    IF(VEHICLES(i)%VELOCITY < initialvelocity)THEN
-      VEHICLES(i)%BRAKE_LIGHT = .TRUE.
-    ELSE
-      VEHICLES(i)%BRAKE_LIGHT = .FALSE.
-    END IF   
-    ! NaSch tird step
-    IF(VEHICLES(i)%VELOCITY > 0)THEN
-      IF(RandomGenerator(ISEED) < VEHICLES(i)%DECELERATION_PROBABILITY)THEN
-        VEHICLES(i)%VELOCITY = VEHICLES(i)%VELOCITY - 1
-      END IF   
-    END IF
-    !finaly we mark the position and trajectory of the vehicle
-    DO aux = 0, VEHICLES(i)%VELOCITY
-      STREET(MOD(VEHICLES(i)%POSITION+aux,L))= .TRUE.
-    END DO          
-    DO aux = 0, VEHICLE_LENGTH
-      STREET(MOD(VEHICLES(i)%POSITION+VEHICLES(i)%VELOCITY+aux,L))= .TRUE.
-    END DO          
-  END SUBROUTINE CooperatorsAlgorithm
-  !This routine performs the second and tird steps of the  algorithm of the defectors
-  SUBROUTINE DefectorsAlgorithm(i, futuregap, gap, gapII, initialvelocity)
-    INTEGER, INTENT(IN) :: i, futuregap, gap, gapII, initialvelocity
-    INTEGER :: auxB, auxE, aux
-    !The vehicle is a defector and is supposed to have enough velocity to overtake at least the front vehicle
-    !We begin with the random deceleration 
-    IF(RandomGenerator(ISEED) < VEHICLES(i)%DECELERATION_PROBABILITY)THEN
-        VEHICLES(i)%VELOCITY = VEHICLES(i)%VELOCITY - 1
-    END IF 
-    ! If the vehicle still cannot overtake then the CooperatorsAlgorithm routine is called, else we keep testing 
-    IF(VEHICLES(i)%VELOCITY>futuregap)THEN
-      DO
-        !If the vehicle fails the test we call the CooperatorsAlgorithm routine. The overtaking is frustrated
-        IF(VEHICLES(i)%VELOCITY <= gap + VEHICLE_LENGTH)THEN
-          CALL CooperatorsAlgorithm(i, gap, gapII, initialvelocity)
-          RETURN
-        END IF   
-        auxB=MOD(VEHICLES(i)%POSITION+VEHICLES(i)%VELOCITY,L)               !rear o the proposed posiion of the vehicle 
-        auxE=MOD(VEHICLES(i)%POSITION+VEHICLES(i)%VELOCITY+VEHICLE_LENGTH,L)!front of the proposed position of the vehicle   
-        IF(.NOT.STREET(auxB))THEN  
-          IF(.NOT.STREET(auxE))THEN            !If both spots are free, the vehicle have space to make the maneuver
-            VEHICLES(i+1)%BRAKE_LIGHT = .TRUE. !Turning the brake light of the overtaken vehicle on 
-            VEHICLES(i)%BRAKE_LIGHT = .FALSE.  !Compactible with overtaking
-            EXIT                               !We exit the tests
-          END IF   
-        END IF 
-        VEHICLES(i)%VELOCITY = VEHICLES(i)%VELOCITY - 1  !If the overtaking of the j-th vehicle fails, decrease the velocity and try again until either, find a suitble empty space, or fail the overtaking
-      END DO
-      !finaly we mark the position and trajectory of the vehicle
-      DO aux = 0, VEHICLES(i)%VELOCITY
-        STREET(MOD(VEHICLES(i)%POSITION+aux,L))= .TRUE.
-      END DO          
-      DO aux = 0, VEHICLE_LENGTH
-        STREET(MOD(VEHICLES(i)%POSITION+VEHICLES(i)%VELOCITY+aux,L))= .TRUE.
-      END DO          
-    ELSE   
-      CALL CooperatorsAlgorithm(i, gap, gapII, initialvelocity)
-      RETURN
-    END IF  
-  END SUBROUTINE DefectorsAlgorithm
-  
-END MODULE SECONDARY_ROUTINES
+! This routine inicializes a mixed population randomly
+  SUBROUTINE RandomSpeciesInitialization(Specie0, Specie1)
+    INTEGER, INTENT(IN) :: Specie0, Specie1
+    INTEGER :: aux, acum
+    If(Specie0==N)then
+      VEHICLES%SPECIES = 0
+      Return
+    Else if(Specie1==N)then
+      VEHICLES%SPECIES = 1
+      Return
+    Else if(Specie0>Specie1)then
+      VEHICLES%SPECIES = 0
+      acum = 1
+      Do While(acum <= Specie1)
+        aux = INT(N*RandomGenerator(ISEED))+1
+        If(VEHICLES(aux)%SPECIES == 0)then
+          VEHICLES(aux)%SPECIES = 1
+          acum = acum + 1
+        End if
+      End do
+    Else
+      VEHICLES%SPECIES = 1
+      acum = 1
+      Do While(acum <= Specie0)
+        aux = INT(N*RandomGenerator(ISEED))+1
+        If(VEHICLES(aux)%SPECIES == 1)then
+          VEHICLES(aux)%SPECIES = 0
+          acum = acum + 1
+        End if
+      End do
+    End if
+  END SUBROUTINE RandomSpeciesInitialization
+! This subroutine implements the main algorithm one particle at the time, it takes the number of the particle and its species as inputs and updates the overtaking number 
+  SUBROUTINE MainAlgorithm(j, especie, OvertakingNumber)
+    INTEGER, INTENT(IN) :: j, especie
+    INTEGER, INTENT(INOUT) :: OvertakingNumber
+    INTEGER :: gap, ExpectedVelocity, EffectiveGap, interactionradius, OldVelocity, p_status, Aux,&
+    &OverDistance, temp
+    REAL(KIND=16) :: TimeHeadway, p
+    LOGICAL :: Overtaking
 
-MODULE PRIMARY_ROUTINES 
+    OldVelocity = VEHICLES(j)%VELOCITY
+    gap = VEHICLES(j+1)%POSITION - VEHICLES(j)%POSITION - VEHICLE_LENGTH
+    ! Evaluation of the cut off time
+    if(VEHICLES(j)%VELOCITY > CUT_OFF_TIME)THEN
+      interactionradius = CUT_OFF_TIME
+    else
+      interactionradius = VEHICLES(j)%VELOCITY
+    end if
+    ! evaluation of the deceleration probability (step 0 in Knospe's work)
+    if(VEHICLES(j)%VELOCITY == 0)then
+      p = P_0
+      p_status = 1
+      TimeHeadway = 1.0*gap
+    else
+      TimeHeadway = gap/VEHICLES(j)%VELOCITY
+      if((VEHICLES(j+1)%BRAKE_LIGHT==1).AND.TimeHeadway < interactionradius)then
+        p = P_B
+        VEHICLES(j)%BRAKE_LIGHT = 1
+        p_status = 2
+      else
+        p = P_f
+        p_status = 3
+      end if
+    end if
+    ! determination of the effective gap and the space available for overtaking
+    ExpectedVelocity = VEHICLES(j+2)%POSITION - VEHICLES(j+1)%POSITION - VEHICLE_LENGTH
+    if(VEHICLES(j+1)%VELOCITY < ExpectedVelocity)then
+      ExpectedVelocity = VEHICLES(j+1)%VELOCITY
+    end if
+    EffectiveGap = ExpectedVelocity - SECURITY_GAP
+    if(EffectiveGap<0)then
+      EffectiveGap = 0
+    end if
+    EffectiveGap = EffectiveGap + gap                                ! Effective gap
+    OverDistance = EffectiveGap + ExpectedVelocity + VEHICLE_LENGTH  ! Minimum distance to cover to overtake
+    !Evaluation of the acceleration (step 1 in Knospe's work)
+    if((VEHICLES(j+1)%BRAKE_LIGHT==0).AND.(VEHICLES(j)%BRAKE_LIGHT==0) &
+    &.OR.TimeHeadway >= interactionradius.OR.VEHICLES(j)%VELOCITY>=OverDistance)then
+      if(VEHICLES(j)%VELOCITY < MAXIMUM_VELOCITY)then
+        VEHICLES(j)%VELOCITY = VEHICLES(j)%VELOCITY + 1
+      end if
+    end if
+    ! Evaluation of the behavior according to the specie (step 2 in Knospe's work)
+    If(VEHICLES(j)%VELOCITY > EffectiveGap)then
+      If (especie == 0)then
+        VEHICLES(j)%VELOCITY = EffectiveGap
+        VEHICLES(j)%BRAKE_LIGHT = 1
+      Else if(especie == 1)then
+        If(VEHICLES(j)%VELOCITY < OverDistance) then
+          VEHICLES(j)%VELOCITY = EffectiveGap
+          VEHICLES(j)%BRAKE_LIGHT = 1
+        Else
+          ! If the minimum distance to overtake is lower than the velocity of the overtaking vehicle then this piece of code will find wheter there is space available to complete the maneuver. If it fail, the overtaking does not happen
+          temp = VEHICLES(j)%VELOCITY
+          Do while (temp>EffectiveGap)
+            Overtaking = .true.
+            Do Aux = -VEHICLE_LENGTH,1
+              If(.NOT.STREET(MOD(VEHICLES(j)%POSITION+temp+Aux,L))==0)then
+                Overtaking = .false.
+                Exit
+              End if
+            End Do
+            if(Overtaking)then
+              VEHICLES(j)%VELOCITY = temp
+              exit
+            else 
+              temp = temp - VEHICLE_LENGTH - 1
+            end if   
+          End do
+          If(Overtaking)then
+            p = p_f
+            p_status = 3
+            OvertakingNumber = OvertakingNumber + 1
+            VEHICLES(j)%BRAKE_LIGHT = 0
+          Else
+            VEHICLES(j)%VELOCITY = EffectiveGap
+            VEHICLES(j)%BRAKE_LIGHT = 1
+          End If
+        End if
+      End if
+    End if
+    ! Finaly, the randomization (step 3 in Knospe's work)
+    If(VEHICLES(j)%VELOCITY > 0)then
+      If(RandomGenerator(ISEED) < p)then
+        VEHICLES(j)%VELOCITY = VEHICLES(j)%VELOCITY - 1
+        If(p_status==2 .and. TimeHeadway < interactionradius)then
+          VEHICLES(j)%BRAKE_LIGHT = 1
+        End if
+      End if
+    End if
+    ! This deviates form Knospe's algorithm as in the presented in their paper, states of braking light turned on are asymptotically absorbing in any density 
+    If(VEHICLES(j)%VELOCITY > OldVelocity .or. VEHICLES(j)%VELOCITY == MAXIMUM_VELOCITY)then
+      VEHICLES(j)%BRAKE_LIGHT = 0
+    End if
+    ! The road updated position of the particle is marked
+    Do Aux = -VEHICLE_LENGTH+1, 0
+      STREET(MOD(VEHICLES(j)%POSITION+VEHICLES(j)%VELOCITY+Aux,L)) = j + 2*N
+    End Do
+
+  END SUBROUTINE MainAlgorithm
+! This routine uses the previous routine to initialize the system. It receives the number of defectors as a parameter
+  SUBROUTINE InitialConditions(DefNumb)
+    INTEGER, INTENT(IN) :: DefNumb
+    INTEGER :: i, gap
+    CALL RandomPositionInitialization(N)
+    CALL ParticlesReordering(1, N)
+    CALL RandomSpeciesInitialization(N-DefNumb,DefNumb)
+    VEHICLES%POSITION = VEHICLES%POSITION + L + VEHICLE_LENGTH
+    VEHICLES%BRAKE_LIGHT = 0
+    VEHICLES(N+1) = VEHICLES(1)
+    VEHICLES(N+1)%POSITION = VEHICLES(N+1)%POSITION + L
+    VEHICLES(N+2) = VEHICLES(2)
+    VEHICLES(N+2)%POSITION = VEHICLES(N+2)%POSITION + L
+    Do i = N, 1, -1
+      gap = VEHICLES(i+1)%POSITION - VEHICLES(i)%POSITION - VEHICLE_LENGTH
+      If(gap < MAXIMUM_VELOCITY)then
+        VEHICLES(i)%VELOCITY = gap
+        VEHICLES(i)%BRAKE_LIGHT = 1
+      Else
+        VEHICLES(i)%VELOCITY = MAXIMUM_VELOCITY
+      End if
+    End do
+    Do i = 0, -N+1, -1
+      VEHICLES(i) = VEHICLES(i+N)
+      VEHICLES(i)%POSITION = VEHICLES(i)%POSITION - L
+    End Do
+    VEHICLES(N+1) = VEHICLES(1)
+    VEHICLES(N+1)%POSITION = VEHICLES(N+1)%POSITION + L
+    VEHICLES(N+2) = VEHICLES(2)
+    VEHICLES(N+2)%POSITION = VEHICLES(N+2)%POSITION + L
+  END SUBROUTINE InitialConditions
+
+! ##############################################################
+! Now we begin the measurements
+! ##############################################################
+
+! This routine measures the fundamental diagram measuring the 
+  SUBROUTINE FundamentalDiagram
+    INTEGER :: i, j, configurations, OvertakingNumber, Transient, Measuring, Beginning, Ending
+    REAL(KIND=16) :: velocity, localconcentration, flux
+    LOGICAL :: Crossing
+    CHARACTER(LEN=100) :: Arq1
+    WRITE(Arq1,"(A22)")"FundamentalDiagram.dat"
+    OPEN(1,FILE=TRIM(Arq1))
+    ALLOCATE(STREET(0:L-1))
+    Transient = 10000
+    Measuring = 100
+    Do N = INT(0.01*(L/VEHICLE_LENGTH)), INT(0.99*(L/VEHICLE_LENGTH)),INT(0.01*(L/VEHICLE_LENGTH))
+      ALLOCATE(VEHICLES(-N+1:N+2))
+      Do configurations = 1,1
+        Call InitialConditions(0)
+        OvertakingNumber = 0
+        Do i = 1,Transient
+          STREET = 0
+          Call ChooseTheFirst(Beginning, Ending)
+          Do j = Ending, Beginning, -1
+            Call MainAlgorithm(j, VEHICLES(j)%SPECIES, OvertakingNumber)
+          End do
+          Call ParticlesReordering(Beginning, Ending)
+          Do j = Beginning-1, -N+1, -1
+            VEHICLES(j) = VEHICLES(j+N)
+            VEHICLES(j)%POSITION = VEHICLES(j)%POSITION - L
+          End Do
+          Do j = Ending+1, N+2
+            VEHICLES(j) = VEHICLES(j-N)
+            VEHICLES(j)%POSITION = VEHICLES(j)%POSITION + L
+          End Do
+        End do
+
+        velocity = 0
+        flux = 0
+        OvertakingNumber = 0
+        Do i = 1, Measuring
+          STREET = 0
+          Call ChooseTheFirst(Beginning, Ending)
+          Do j = Ending, Beginning, -1
+            Call MainAlgorithm(j, VEHICLES(j)%SPECIES, OvertakingNumber)
+          End do
+          Do j = Beginning, Ending
+            Crossing = .false.
+            if(MOD(VEHICLES(j)%POSITION,L) < L/2)then
+              Crossing = .true.
+            end if
+            VEHICLES(j)%POSITION=VEHICLES(j)%VELOCITY+VEHICLES(j)%POSITION
+            if(MOD(VEHICLES(j)%POSITION,L) >= L/2 .and. Crossing)then
+              Crossing = .true.
+              velocity = velocity + VEHICLES(j)%VELOCITY
+              flux = flux + 1.
+            end if
+          End Do
+          Call ParticlesReordering(Beginning, Ending)
+          Do j = Beginning-1, -N+1, -1
+            VEHICLES(j) = VEHICLES(j+N)
+            VEHICLES(j)%POSITION = VEHICLES(j)%POSITION - L
+          End Do
+          Do j = Ending+1, N+2
+            VEHICLES(j) = VEHICLES(j-N)
+            VEHICLES(j)%POSITION = VEHICLES(j)%POSITION + L
+          End Do
+        End do
+        if(flux>0) then
+          velocity = 5.4*velocity/flux
+        else
+          velocity = 0.0
+        end if
+        flux = flux*Measuring/3600
+        localconcentration = 0
+        do j = 1, N
+          localconcentration = localconcentration + VEHICLES(j)%BRAKE_LIGHT
+        end do
+        localconcentration = localconcentration/N
+        if(velocity>0) then
+          !Simulational unities
+          !write(1,*) flux/velocity, flux, velocity, OvertakingNumber
+          !km/h unities
+          write(1,*) 133.33*flux/velocity, 720*flux, 5.4*velocity, OvertakingNumber
+        end if
+      End do
+      DEALLOCATE(VEHICLES)
+    End do
+  END SUBROUTINE FundamentalDiagram
+! This routine measures the distance headway (gaps histogram), the time headway (time gaps histogram) and optimum velocity curve (average velocity as a function of the gap)   
+  SUBROUTINE DistanceHeadway_TimeHeadway
+    INTEGER :: i, j, configurations, OvertakingNumber, Transient, Measuring, Beginning, Ending, gap, Aux, ConfigNumber
+    REAL(KIND=16) :: Cont1, Cont2, Cont3, Cont4
+    LOGICAL :: Crossing
+    REAL(KIND=16), DIMENSION(:,:,:), ALLOCATABLE :: Histogram
+    CHARACTER(LEN=100) :: Arq1, Arq2, Arq3
+    WRITE(Arq1,"(A19)")"DistanceHeadway.dax"
+    OPEN(1,FILE=TRIM(Arq1))
+    WRITE(Arq2,"(A15)")"TimeHeadway.dax"
+    OPEN(2,FILE=TRIM(Arq2))
+    WRITE(Arq3,"(A19)")"OptimumVelocity.dax"
+    OPEN(3,FILE=TRIM(Arq3))
+
+    ALLOCATE(STREET(0:L-1))
+    Transient = 10000
+    Measuring = 10000
+    ConfigNumber = 10
+    ALLOCATE(Histogram(4,0:L-1,ConfigNumber))
+    N = INT(0.1*(L/VEHICLE_LENGTH))
+    Histogram = 0
+    ALLOCATE(VEHICLES(-N+1:N+2))
+    Do configurations = 1,ConfigNumber
+      Call InitialConditions(N)
+      OvertakingNumber = 0
+      Do i = 1,Transient
+        STREET = 0
+        Call ChooseTheFirst(Beginning, Ending)
+        Do j = Ending, Beginning, -1
+          Call MainAlgorithm(j, VEHICLES(j)%SPECIES, OvertakingNumber)
+        End do
+        Call ParticlesReordering(Beginning, Ending)
+        Do j = Beginning-1, -N+1, -1
+          VEHICLES(j) = VEHICLES(j+N)
+          VEHICLES(j)%POSITION = VEHICLES(j)%POSITION - L
+        End Do
+        Do j = Ending+1, N+2
+          VEHICLES(j) = VEHICLES(j-N)
+          VEHICLES(j)%POSITION = VEHICLES(j)%POSITION + L
+        End Do
+      End do
+      Do i = 1,Measuring
+        STREET = 0
+        Call ChooseTheFirst(Beginning, Ending)
+        Do j = Ending, Beginning, -1
+          Call MainAlgorithm(j, VEHICLES(j)%SPECIES, OvertakingNumber)
+        End do
+        Do j = Ending, Beginning, -1
+          Crossing = .false.
+          if(MOD(VEHICLES(j)%POSITION,L) < L/2)then
+            Crossing = .true.
+          end if
+          VEHICLES(j)%POSITION=VEHICLES(j)%VELOCITY+VEHICLES(j)%POSITION
+          if(MOD(VEHICLES(j)%POSITION,L) >= L/2 .and. Crossing)then
+            Crossing = .true.
+            gap = VEHICLES(j+1)%POSITION-VEHICLES(j)%POSITION-VEHICLE_LENGTH
+            Histogram(1,gap,configurations)=Histogram(1,gap,configurations)+1.
+            Histogram(2,gap,configurations)=Histogram(2,gap,configurations)+VEHICLES(j)%VELOCITY
+            If(VEHICLES(j)%VELOCITY>0)then
+              If((VEHICLES(j)%VELOCITY>=MAXIMUM_VELOCITY-5).or.gap>=MAXIMUM_VELOCITY-5)then
+                Aux = 10*gap/VEHICLES(j)%VELOCITY
+                If(Aux<L)Then
+                  Histogram(3,Aux,configurations)=Histogram(3,Aux,configurations)+1.
+                End If
+              Else   
+                Aux = 10*gap/VEHICLES(j)%VELOCITY
+                If(Aux<L)Then
+                  Histogram(4,Aux,configurations)=Histogram(4,Aux,configurations)+1.
+                End If
+              End if  
+            End if
+          else
+            Crossing = .false.
+          end if
+        End Do
+        Call ParticlesReordering(Beginning, Ending)
+        Do j = Beginning-1, -N+1, -1
+          VEHICLES(j) = VEHICLES(j+N)
+          VEHICLES(j)%POSITION = VEHICLES(j)%POSITION - L
+        End Do
+        Do j = Ending+1, N+2
+          VEHICLES(j) = VEHICLES(j-N)
+          VEHICLES(j)%POSITION = VEHICLES(j)%POSITION + L
+        End Do
+      End do
+    End do
+    Do j = 1, ConfigNumber
+      Cont1 = 0.
+      Cont2 = 0.
+      Cont3 = 0.
+      Cont4 = 0.
+      Do i = 0,L-1
+        Cont1 = Cont1 + Histogram(1,i,j)
+        Cont3 = Cont3 + Histogram(3,i,j)
+        Cont4 = Cont4 + Histogram(4,i,j)
+        If(Histogram(1,i,j)>0)then
+          Histogram(2,i,j) = Histogram(2,i,j)/Histogram(1,i,j)
+        Else
+          Histogram(2,i,j) = 0.
+        End If
+      End do
+      Histogram(1,0:L-1,j) = Histogram(1,0:L-1,j)/Cont1
+      Histogram(3,0:L-1,j) = Histogram(3,0:L-1,j)/Cont3
+      Histogram(4,0:L-1,j) = Histogram(4,0:L-1,j)/Cont4
+    End do
+    
+    Do i = 0,300!L-1
+      Cont1 = 0.
+      Cont2 = 0.
+      Cont3 = 0.
+      Cont4 = 0.
+      Do j = 1, ConfigNumber
+! print the results of each configuration        
+        write(1,"(f9.2,A1)",ADVANCE='NO')Histogram(1,i,j)," "
+        write(2,"(f9.2,A1,f9.2)",ADVANCE='NO')Histogram(3,i,j)," ", Histogram(4,i,j)
+        write(3,"(f9.2,A1)",ADVANCE='NO')Histogram(2,i,j)," "
+        Cont1 = Cont1 + Histogram(1,i,j)
+        Cont2 = Cont2 + Histogram(2,i,j)
+        Cont3 = Cont3 + Histogram(3,i,j)
+        Cont4 = Cont4 + Histogram(4,i,j)
+      End do
+      Cont1 = Cont1/ConfigNumber
+      Cont2 = Cont2/ConfigNumber
+      Cont3 = Cont3/ConfigNumber
+      Cont4 = Cont4/ConfigNumber
+      write(1,"(f9.2,A1)",ADVANCE='NO')Cont1," "
+      write(2,"(f9.2,A1,f9.2)",ADVANCE='NO')Cont3," ",Cont4
+      write(3,"(f9.2,A1)",ADVANCE='NO')Cont2," "
+      write(1,*)" "
+      write(2,*)" "
+      write(3,*)" "
+    End Do
+    Close(1)
+    Close(2)
+    Close(3)
+    DEALLOCATE(VEHICLES)
+    DEALLOCATE(STREET)
+    DEALLOCATE(Histogram)
+  END SUBROUTINE DistanceHeadway_TimeHeadway
+! This routine measures the temporal Crosscovariances and temporal Autocovariances of the 3 variables of interest
+  SUBROUTINE TemporalCrossCovariances
+    INTEGER :: i, j, k, configurations, OvertakingNumber, Transient, Measuring, Beginning, Ending, ConfigNumber
+    INTEGER :: Minute, tau
+    REAL(KIND=16) :: Cont1, Cont2, Cont3, Cont4, Cont5, Cont6
+    LOGICAL :: Crossing
+    REAL(KIND=16), DIMENSION(:,:), ALLOCATABLE :: Variables 
+    REAL(KIND=16), DIMENSION(9):: CrossProducts
+    REAL(KIND=16), DIMENSION(6):: Covariances
+    CHARACTER(LEN=100) :: Arq1
+    WRITE(Arq1,"(A20)")"CrossCovariances.dat"
+    OPEN(1,FILE=TRIM(Arq1))
+    
+    Transient = 1000
+    Measuring = 10000
+    ConfigNumber = 10
+    Minute = 60
+    tau=100
+    N = INT(0.1*(L/VEHICLE_LENGTH))
+    ALLOCATE(STREET(0:L-1))
+    ALLOCATE(Variables(3,Measuring))
+    ALLOCATE(VEHICLES(-N+1:N+2))
+    CrossProducts = 0
+    Variables = 0
+    Do configurations = 1,ConfigNumber
+      Call InitialConditions(0)
+      OvertakingNumber = 0
+      Do i = 1,Transient
+        STREET = 0
+        Call ChooseTheFirst(Beginning, Ending)
+        Do j = Ending, Beginning, -1
+          Call MainAlgorithm(j, VEHICLES(j)%SPECIES, OvertakingNumber)
+        End do
+        Call ParticlesReordering(Beginning, Ending)
+        Do j = Beginning-1, -N+1, -1
+          VEHICLES(j) = VEHICLES(j+N)
+          VEHICLES(j)%POSITION = VEHICLES(j)%POSITION - L
+        End Do
+        Do j = Ending+1, N+2
+          VEHICLES(j) = VEHICLES(j-N)
+          VEHICLES(j)%POSITION = VEHICLES(j)%POSITION + L
+        End Do
+      End do
+      Do i = 1, Measuring
+        Cont1 = 0.0
+        Cont2 = 0.0
+        Cont3 = 0.0
+        Do k = 1, Minute 
+          STREET = 0
+          Call ChooseTheFirst(Beginning, Ending)
+          Do j = Ending, Beginning, -1
+            Call MainAlgorithm(j, VEHICLES(j)%SPECIES, OvertakingNumber)
+          End do
+          Do j = Ending, Beginning, -1
+            Crossing = .false.
+            if(MOD(VEHICLES(j)%POSITION,L) < L/2)then
+              Crossing = .true.
+            end if
+            VEHICLES(j)%POSITION=VEHICLES(j)%VELOCITY+VEHICLES(j)%POSITION
+            if(MOD(VEHICLES(j)%POSITION,L) >= L/2 .and. Crossing)then
+              Crossing = .true.
+              Cont1 = Cont1 + 1.
+              Cont2 = Cont2 + VEHICLES(j)%VELOCITY
+            end if
+          End do
+        End Do
+        if(Cont1>0)then
+          Cont2 = Cont2/Cont1
+          Cont3 = Cont1/Cont2
+        end if 
+        Variables(1,i) = Variables(1,i) + Cont3  ! density
+        Variables(2,i) = Variables(2,i) + Cont2  ! velocity
+        Variables(3,i) = Variables(3,i) + Cont1  ! flux
+        Call ParticlesReordering(Beginning, Ending)
+        Do j = Beginning-1, -N+1, -1
+          VEHICLES(j) = VEHICLES(j+N)
+          VEHICLES(j)%POSITION = VEHICLES(j)%POSITION - L
+        End Do
+        Do j = Ending+1, N+2
+          VEHICLES(j) = VEHICLES(j-N)
+          VEHICLES(j)%POSITION = VEHICLES(j)%POSITION + L
+        End Do
+      End do
+    End do
+    Variables = Variables/ConfigNumber   ! average over configurations
+    Do i = 0,tau
+      CrossProducts = 0.0
+      Cont1 = 0.0
+      Cont2 = 0.0
+      Cont3 = 0.0
+      Cont4 = 0.0
+      Cont5 = 0.0
+      Cont6 = 0.0
+      Do j = 1, Measuring - i
+        Cont3 = Cont3 + Variables(1,j)  ! density
+        Cont2 = Cont2 + Variables(2,j)  ! velocity
+        Cont1 = Cont1 + Variables(3,j)  ! flux
+        Cont4 = Cont4 + Variables(1,j)*Variables(1,j) 
+        Cont5 = Cont5 + Variables(2,j)*Variables(2,j) 
+        Cont6 = Cont6 + Variables(3,j)*Variables(3,j) 
+        CrossProducts(1) = CrossProducts(1) + Variables(1,j)*Variables(1,j+i)  !density x density 
+        CrossProducts(2) = CrossProducts(2) + Variables(2,j)*Variables(2,j+i)  !velociy x velocity
+        CrossProducts(3) = CrossProducts(3) + Variables(3,j)*Variables(3,j+i)  !flux x flux
+        CrossProducts(4) = CrossProducts(4) + Variables(1,j)*Variables(2,j+i)  !density x velocity
+        CrossProducts(5) = CrossProducts(5) + Variables(1,j)*Variables(3,j+i)  !density x flux
+        CrossProducts(6) = CrossProducts(6) + Variables(2,j)*Variables(1,j+i)  !velociy x density
+        CrossProducts(7) = CrossProducts(7) + Variables(2,j)*Variables(3,j+i)  !velociy x flux
+        CrossProducts(8) = CrossProducts(8) + Variables(3,j)*Variables(1,j+i)  !flux x density
+        CrossProducts(9) = CrossProducts(9) + Variables(3,j)*Variables(2,j+i)  !flux x velocity
+      End Do
+      Cont1 = Cont1/(Measuring - i)
+      Cont2 = Cont2/(Measuring - i)
+      Cont3 = Cont3/(Measuring - i)
+      Cont4 = Cont4/(Measuring - i)
+      Cont5 = Cont5/(Measuring - i)
+      Cont6 = Cont6/(Measuring - i)
+      CrossProducts = CrossProducts/(Measuring - i)
+      ! Autocovariances
+      Covariances(1) = (CrossProducts(1) - Cont3*Cont3)/(Cont4 - Cont3*Cont3) !density x density  covariance
+      Covariances(2) = (CrossProducts(2) - Cont2*Cont2)/(Cont5 - Cont2*Cont2) !velocity x velocity  covariance
+      Covariances(3) = (CrossProducts(3) - Cont1*Cont1)/(Cont6 - Cont1*Cont1) !flux x flux  covariance
+      ! Crosscovariances
+      Covariances(4) = (CrossProducts(4) -  Cont2*Cont3)/&
+      &SQRT((Cont4 - Cont3*Cont3)*(Cont5 - Cont2*Cont2))     !density x velocity  covariance
+      Covariances(5) = (CrossProducts(5) -  Cont1*Cont3)/&
+      &SQRT((Cont4 - Cont3*Cont3)*(Cont6 - Cont1*Cont1))     !density x flux  covariance
+      Covariances(6) = (CrossProducts(7) -  Cont2*Cont1)/&
+      &SQRT((Cont6 - Cont1*Cont1)*(Cont5 - Cont2*Cont2))     !velocity x flux  covariance
+      write(1,*)i, Covariances(1), Covariances(2), Covariances(3), Covariances(4), Covariances(5), Covariances(6)
+    End do
+    Close(1)
+    DEALLOCATE(VEHICLES)
+    DEALLOCATE(STREET)
+    DEALLOCATE(Variables)
+  END SUBROUTINE TemporalCrossCovariances
+! This routine measures the Pearson correlation of the velocities of two neighbohrs
+  SUBROUTINE SpacialCorrelation
+    INTEGER :: i, j, configurations, OvertakingNumber, Transient, Measuring, Beginning, Ending, ConfigNumber
+    INTEGER :: FocalVehicle
+    REAL(KIND=16) :: Correlation
+    REAL(KIND=16), DIMENSION(2) :: FocalVariables
+    REAL(KIND=16), DIMENSION(:,:), ALLOCATABLE :: Variables 
+    CHARACTER(LEN=100) :: Arq1
+    WRITE(Arq1,"(A21)")"CrossCorrelations.dat"
+    OPEN(1,FILE=TRIM(Arq1))
+    
+    Transient = 1000
+    Measuring = 10000
+    ConfigNumber = 10
+    N = INT(0.1*(L/VEHICLE_LENGTH))
+    FocalVehicle = N/2             ! vehicle to be measured
+    ALLOCATE(STREET(0:L-1))
+    ALLOCATE(Variables(3,0:N-1))
+    ALLOCATE(VEHICLES(-N+1:N+2))
+    Variables = 0.0
+    FocalVariables = 0.0
+    Do configurations = 1,ConfigNumber
+      Call InitialConditions(0)
+      OvertakingNumber = 0
+      Do i = 1,Transient
+        STREET = 0
+        Call ChooseTheFirst(Beginning, Ending)
+        Do j = Ending, Beginning, -1
+          Call MainAlgorithm(j, VEHICLES(j)%SPECIES, OvertakingNumber)
+        End do
+        Do j = Ending, Beginning, -1
+          VEHICLES(j)%POSITION=VEHICLES(j)%VELOCITY+VEHICLES(j)%POSITION
+        End do
+        Call ParticlesReordering(Beginning, Ending)
+        Do j = Beginning-1, -N+1, -1
+          VEHICLES(j) = VEHICLES(j+N)
+          VEHICLES(j)%POSITION = VEHICLES(j)%POSITION - L
+        End Do
+        Do j = Ending+1, N+2
+          VEHICLES(j) = VEHICLES(j-N)
+          VEHICLES(j)%POSITION = VEHICLES(j)%POSITION + L
+        End Do
+      End do
+      Do i = 1, Measuring
+        STREET = 0
+        Call ChooseTheFirst(Beginning, Ending)
+        Do j = Ending, Beginning, -1
+          Call MainAlgorithm(j, VEHICLES(j)%SPECIES, OvertakingNumber)
+        End do
+        Do j = Ending, Beginning, -1
+          VEHICLES(j)%POSITION=VEHICLES(j)%VELOCITY+VEHICLES(j)%POSITION
+        End do
+        Call ParticlesReordering(Beginning, Ending)
+        Do j = Beginning-1, -N+1, -1
+          VEHICLES(j) = VEHICLES(j+N)
+          VEHICLES(j)%POSITION = VEHICLES(j)%POSITION - L
+        End Do
+        Do j = Ending+1, N+2
+          VEHICLES(j) = VEHICLES(j-N)
+          VEHICLES(j)%POSITION = VEHICLES(j)%POSITION + L
+        End Do
+        FocalVariables(1) = FocalVariables(1) + VEHICLES(FocalVehicle)%VELOCITY                                 ! averege of the focal vehicle' velocity
+        FocalVariables(2) = FocalVariables(2) + VEHICLES(FocalVehicle)%VELOCITY*VEHICLES(FocalVehicle)%VELOCITY ! averege of the focal vehicle' squared velocity
+        Do j = FocalVehicle, FocalVehicle + N - 1
+          Variables(1,j-FocalVehicle) = Variables(1,j-FocalVehicle) + VEHICLES(j)%VELOCITY   ! averege of the target vehicle' velocity                           
+          Variables(2,j-FocalVehicle) = Variables(2,j-FocalVehicle) + VEHICLES(j)%VELOCITY*VEHICLES(j)%VELOCITY ! averege of the target vehicle' squared velocity                           
+          Variables(3,j-FocalVehicle) = Variables(3,j-FocalVehicle) + VEHICLES(j)%VELOCITY*VEHICLES(FocalVehicle)%VELOCITY ! average of the cross product
+        End do
+      End Do
+    End do
+    FocalVariables = FocalVariables/(Measuring*ConfigNumber)
+    Variables = Variables/(Measuring*ConfigNumber)
+    Do i = 0,N
+      Correlation = (Variables(3,i) - FocalVariables(1)*Variables(1,i))/&
+      &(SQRT(Variables(2,i)-Variables(1,i)*Variables(1,i))*SQRT(FocalVariables(2)-FocalVariables(1)*FocalVariables(1)))
+      write(1,*)i, Correlation
+    End do
+    
+    DEALLOCATE(VEHICLES)
+    DEALLOCATE(STREET)
+    DEALLOCATE(Variables)
+  END SUBROUTINE SpacialCorrelation
+  
+END MODULE ROUTINES
+
+
+PROGRAM MAIN
   USE EXTERNAL_PARAMETERS
   USE GLOBAL_VARIABLES
   USE FUNCTIONS
-  USE SECONDARY_ROUTINES
+  USE ROUTINES
   IMPLICIT NONE
-  CONTAINS
-  !This routine initializes the system using the routineS of THE SECUNDARY_ROUTINES module
-  SUBROUTINE InitialConditions
-    INTEGER :: i, gap
-    CALL RandomPositionInitialization(N)                      !Position initialization
-    CALL RandomSpeciesInitialization(N, NUMBER_OF_DEFECTORS)  !Species initialization
-    CALL ParticlesReordering(1, N)                            !Ordering of the vehicles 
-    VEHICLES%BRAKE_LIGHT = .FALSE.
-    !initialization of the velocities
-    VEHICLES(N + 1) = VEHICLES(1)
-    VEHICLES(N + 1)%POSITION = VEHICLES(N + 1)%POSITION + L 
-    DO i = N, 1, -1
-      gap = VEHICLES(i + 1)%POSITION - VEHICLES(i)%POSITION - VEHICLE_LENGTH
-      IF(gap < MAXIMUM_VELOCITY)THEN
-        VEHICLES(i)%VELOCITY = gap
-        VEHICLES(i)%BRAKE_LIGHT = .TRUE.
-      ELSE
-        VEHICLES(i)%VELOCITY = MAXIMUM_VELOCITY
-      END IF   
-    END DO      
-    ! Aplication of the periodic boundary conditions TO THE VEHICLES. That it, initialization of the VEHICLE vector with 2N+2 entries
-    VEHICLES%POSITION = VEHICLES%POSITION + L
-    VEHICLES(N + 1) = VEHICLES(1)
-    VEHICLES(N + 1)%POSITION = VEHICLES(N + 1)%POSITION + L
-    VEHICLES(N + 2) = VEHICLES(2)
-    VEHICLES(N + 2)%POSITION = VEHICLES(N + 2)%POSITION + L 
-    DO i = -N, 0
-     VEHICLES(i)%VELOCITY = VEHICLES(i + N)%VELOCITY 
-     VEHICLES(i)%SPECIES= VEHICLES(i + N)%SPECIES
-     VEHICLES(i)%BRAKE_LIGHT = VEHICLES(i + N)%BRAKE_LIGHT
-     VEHICLES(i)%DECELERATION_PROBABILITY = VEHICLES(i + N)%DECELERATION_PROBABILITY
-     VEHICLES(i)%POSITION = VEHICLES(i + N)%POSITION - L 
-    END DO 
-    VEHICLES%POSITION = VEHICLES%POSITION + L
-  END SUBROUTINE InitialConditions
-  !This routine perform the aceleration step, as well as the decision of the deceleration factor adopted by the vehicle
-  SUBROUTINE AcelerationProcess
-    INTEGER :: i, gap, aux
-    REAL :: timeheadway, interactionradius
-    !We perform the step to the 1 to N vehicles and copy the result to the rest
-    DO i = N, 1, -1
-      !All v=0 vehicles have the same velocity update rule than it its written here for computing time reasons
-      IF(VEHICLES(i)%VELOCITY == 0)THEN
-        VEHICLES(i)%DECELERATION_PROBABILITY = P_0
-        VEHICLES(i)%VELOCITY = VEHICLES(i)%VELOCITY + 1
-        CYCLE  
-      END IF     
-      gap = VEHICLES(i + 1)%POSITION - VEHICLES(i)%POSITION - VEHICLE_LENGTH
-      SELECT CASE (VEHICLES(i)%SPECIES) ! Diferent species have diferent update rules  
-      CASE(0)                           ! Cooperators rules                         
-        !InteractionRadius = MIN(v_n, CUT_OFF_TIME)
-        IF(VEHICLES(i)%VELOCITY >= CUT_OFF_TIME)THEN
-          interactionradius = CUT_OFF_TIME
-        ELSE
-          interactionradius = VEHICLES(i)%VELOCITY
-        END IF 
-        timeheadway = gap/VEHICLES(i)%VELOCITY       !t_h(n)=d_n/v_n  notice that v_n .ne. 0
-        !if ((b_(n+1) = 0) and (b_n = 0)) or (t_h .ge. t_s ) then: v_n (t + 1) = min(v_n (t) + 1, v_max ).
-        IF(VEHICLES(i + 1)%BRAKE_LIGHT .AND. timeheadway < interactionradius)THEN
-          VEHICLES(i)%DECELERATION_PROBABILITY = P_B  !vehicle interacting does not have an increase in its velocty
-          CYCLE
-        ELSE 
-          VEHICLES(i)%DECELERATION_PROBABILITY = P    ! free vehicle that have an increase in its velocty
-          IF((.NOT.VEHICLES(i + 1)%BRAKE_LIGHT .AND. .NOT.VEHICLES(i)%BRAKE_LIGHT) &
-          &.OR. timeheadway >= interactionradius)THEN
-            IF(VEHICLES(i)%VELOCITY < MAXIMUM_VELOCITY)THEN
-              VEHICLES(i)%VELOCITY = VEHICLES(i)%VELOCITY + 1
-            END IF   
-          END IF 
-        END IF 
-      CASE(1)                               !Defectors rule
-        aux = gap + VEHICLES(i + 1)%VELOCITY
-        !Does the vehicle have enough velocity to overtake? behave as a free vehicle!
-        IF(VEHICLES(i)%VELOCITY > aux)THEN  
-          VEHICLES(i)%DECELERATION_PROBABILITY = P
-          IF(VEHICLES(i)%VELOCITY < MAXIMUM_VELOCITY)THEN 
-            VEHICLES(i)%VELOCITY = VEHICLES(i)%VELOCITY + 1
-          END IF   
-          CYCLE
-        !Else, behave as a cooperator   
-        ELSE 
-          IF(VEHICLES(i)%VELOCITY >= CUT_OFF_TIME)THEN
-            interactionradius = CUT_OFF_TIME
-          ELSE
-            interactionradius = VEHICLES(i)%VELOCITY
-          END IF 
-          timeheadway = gap/VEHICLES(i)%VELOCITY
-          IF(VEHICLES(i + 1)%BRAKE_LIGHT .AND. timeheadway < interactionradius )THEN
-            VEHICLES(i)%DECELERATION_PROBABILITY = P_B
-            CYCLE
-          ELSE 
-            VEHICLES(i)%DECELERATION_PROBABILITY=P
-            IF((.NOT.VEHICLES(i + 1)%BRAKE_LIGHT .AND. .NOT.VEHICLES(i)%BRAKE_LIGHT)&
-            &.OR. timeheadway >= interactionradius)THEN
-              IF(VEHICLES(i)%VELOCITY<MAXIMUM_VELOCITY)THEN 
-                VEHICLES(i)%VELOCITY = VEHICLES(i)%VELOCITY + 1
-              END IF   
-            END IF   
-          END IF 
-        END IF  
-      END SELECT  
-    END DO
-    DO i = N + 1, N + 2
-      VEHICLES(i) = VEHICLES(i - N)
-      VEHICLES(i)%POSITION = VEHICLES(i)%POSITION + L 
-    END DO 
-    DO i = 0, -N, -1
-     VEHICLES(i)=VEHICLES(i+N)
-     VEHICLES(i)%POSITION=VEHICLES(i)%POSITION-L 
-    END DO    
-  END SUBROUTINE AcelerationProcess
-  !This routine perform the response of the vehicles to interactions among thenselves sellecting the vehicles who perform a cooperator-like behavior or a defector-like behavior. 
-  SUBROUTINE InteractionProcess    
-    INTEGER ::i, j, ending, beginning, gap, gapII, aux, initialvelocity, futuregap
-    !This is important for security reasons and is important only for the defectors
-    STREET = .FALSE.    
-    DO i = 1, N 
-      DO j = 0, VEHICLE_LENGTH
-        STREET(MOD(VEHICLES(i)%POSITION + j, L)) = .TRUE.
-      END DO  
-    END DO 
-    !We choose the vehicle to begin the update of the velocities
-    CALL ChooseTheFirst(ending)
-    beginning = ending - N + 1
-    DO i = ending, beginning, -1     
-      initialvelocity = VEHICLES(i)%VELOCITY
-      futuregap = VEHICLES(i + 1)%POSITION + VEHICLES(i + 1)%VELOCITY - VEHICLES(i)%POSITION + VEHICLE_LENGTH 
-      gap = VEHICLES(i + 1)%POSITION - VEHICLES(i)%POSITION - VEHICLE_LENGTH 
-      gapII = VEHICLES(i + 2)%POSITION - VEHICLES(i + 1)%POSITION - VEHICLE_LENGTH 
-      IF(VEHICLES(i)%VELOCITY <= gap + VEHICLE_LENGTH)THEN  !Overtaking is impossible: call the cooperators routine regardless of its strategy
-        CALL CooperatorsAlgorithm(i, gap, gapII, initialvelocity)
-        CYCLE
-      END IF   
-      IF(VEHICLES(i)%SPECIES== 0)THEN   !The vehicle is a cooperator: call the cooperators routine
-        CALL CooperatorsAlgorithm(i, gap, gapII, initialvelocity)
-        CYCLE
-      ELSE                              !The vehicle is a defector and may overtake: call the defectors routine
-        CALL DefectorsAlgorithm(i, futuregap, gap, gapII, initialvelocity)
-        CYCLE
-      END IF   
-    END DO    
-    !Update of the positions
-    DO i = beginning, ending 
-      VEHICLES(i)%POSITION=VEHICLES(i)%VELOCITY+VEHICLES(i)%POSITION
-    END DO
-    !Reordering of the vehicles 
-    CALL ParticlesReordering(beginning, ending)
-    !Updating all other vehicles 
-    DO i = ending + 1, N + 2
-      VEHICLES(i) = VEHICLES(i - N)
-      VEHICLES(i)%POSITION = VEHICLES(i)%POSITION + L 
-    END DO 
-    DO i = beginning - 1, -N , -1
-      VEHICLES(i) = VEHICLES(i + N)
-      VEHICLES(i)%POSITION = VEHICLES(i)%POSITION - L 
-    END DO 
-  END SUBROUTINE InteractionProcess
-      
-  ! We initialize the system defining a global density c. 
-  ! Then we divide the highway in 10 segments and measure the concentration and the flux in each segment, printing to the file  FundamentalDiagram.dat.
-  ! The result is the fundamental diagram of the system as presented in Wolfgang Knospe, Ludger Santen, Andreas Schadschneider, and Michael Schreckenberg. Towards a realistic microscopic description ofhighway traffic.J. Phys. A-Math Gen., 33(48):L477, 2000 figure 1.
-  SUBROUTINE FUNDAMENTAL_DIAGRAM
-    INTEGER :: i, j
-    REAL(KIND=RDP), DIMENSION(0:9) :: velocity, localconcentration, flux 
-    CHARACTER(LEN=100) :: Arq1
-    WRITE(Arq1,"(A23)")"FundamentalDiagramD.dat"
-    OPEN(1,FILE=TRIM(Arq1))   
-    N = INT(0.10*(L/VEHICLE_LENGTH)) !Global density= 10%
-    ALLOCATE(VEHICLES(-N:N+2))
-    NUMBER_OF_DEFECTORS=N
-    
-    CALL InitialConditions           !initialization of the objects  
-    DO i = 1, TRANSIENT_TIME         !Transient
-      CALL AcelerationProcess
-      CALL InteractionProcess
-    END DO
-    velocity = 0
-    localconcentration = 0
-    DO i = 1, MEASUREMENT_TIME              !measurements
-      CALL AcelerationProcess
-      CALL InteractionProcess
-      DO j = 1, N
-        !print*,i,j,MOD(VEHICLES(j)%POSITION,L),L  
-        SELECT CASE(MOD(VEHICLES(j)%POSITION,L))
-        CASE(0:INT(0.1*L))
-          velocity(0) = velocity(0) + VEHICLES(j)%VELOCITY
-          localconcentration(0) = localconcentration(0) + 1
-        CASE(INT(0.1*L) + 1:INT(0.2*L))
-          velocity(1) = velocity(1) + VEHICLES(j)%VELOCITY
-          localconcentration(1) = localconcentration(1) + 1
-        CASE(INT(0.2*L) + 1: INT(0.3*L))
-          velocity(2) = velocity(2) + VEHICLES(j)%VELOCITY
-          localconcentration(2) = localconcentration(2) + 1
-        CASE(INT(0.3*L) + 1: INT(0.4*L))
-          velocity(3) = velocity(3) + VEHICLES(j)%VELOCITY
-          localconcentration(3) = localconcentration(3) + 1
-        CASE(INT(0.4*L) + 1: INT(0.5*L))
-          velocity(4) = velocity(4) + VEHICLES(j)%VELOCITY
-          localconcentration(4) = localconcentration(4) + 1
-        CASE(INT(0.5*L) + 1: INT(0.6*L))
-          velocity(5) = velocity(5) + VEHICLES(j)%VELOCITY
-          localconcentration(5) = localconcentration(5) + 1
-        CASE(INT(0.6*L) + 1: INT(0.7*L))
-          velocity(6) = velocity(6) + VEHICLES(j)%VELOCITY
-          localconcentration(6) = localconcentration(6) + 1
-        CASE(INT(0.7*L) + 1: INT(0.8*L))
-        velocity(7) = velocity(7) + VEHICLES(j)%VELOCITY
-          localconcentration(7) = localconcentration(7) + 1
-        CASE(INT(0.8*L) + 1: INT(0.9*L))
-          velocity(8) = velocity(8) + VEHICLES(j)%VELOCITY
-          localconcentration(8) = localconcentration(8) + 1
-        CASE(INT(0.9*L) + 1: L-1)
-          velocity(9) = velocity(9) + VEHICLES(j)%VELOCITY
-          localconcentration(9) = localconcentration(9) + 1
-        END SELECT
-      END DO
-      DO j = 0, 9
-        IF(localconcentration(j) == 0)THEN
-          flux(j) = 0
-        ELSE
-          velocity(j) = velocity(j)/localconcentration(j)
-          localconcentration(j) = (localconcentration(j)*VEHICLE_LENGTH)/(0.1*L)
-          flux(j) = localconcentration(j)*velocity(j)
-        END IF 
-        WRITE(1,"(f5.3,A1,f5.3)") localconcentration(j), " ", flux(j)
-      END DO
-    END DO
-    DEALLOCATE(VEHICLES)
-  END SUBROUTINE FUNDAMENTAL_DIAGRAM
-END MODULE PRIMARY_ROUTINES 
-
-PROGRAM MAIN
-  USE EXTERNAL_PARAMETERS 
-  USE GLOBAL_VARIABLES
-  USE FUNCTIONS
-  USE SECONDARY_ROUTINES
-  USE PRIMARY_ROUTINES
-  IMPLICIT NONE
-  ISEED = 3577
-  CALL FUNDAMENTAL_DIAGRAM
+  ISEED = 3117
+  ! uncoment to run one of the routine below
+  
+  !Call FundamentalDiagram
+  !Call DistanceHeadway_TimeHeadway
+  !Call TemporalCrossCovariances
+  !Call SpacialCorrelation
+  
 END PROGRAM MAIN
 
